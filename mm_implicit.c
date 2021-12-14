@@ -14,8 +14,7 @@
 #include <assert.h>
 #include <unistd.h>
 #include <string.h>
-#include <sys/mman.h>
-#include <errno.h>
+
 #include "mm.h"
 #include "memlib.h"
 
@@ -62,60 +61,31 @@ team_t team = {
 #define HDRP(bp) ((char *)(bp)-WSIZE) //char는 1바이트니까 형변환을해줘야해
 #define FTRP(bp) ((char *)(bp)+GET_SIZE(HDRP(bp))-DSIZE)
 
-#define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(HDRP(bp)))
-#define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE((HDRP(bp)-WSIZE)))
-
-#define PRED_P(bp) (*(void**)(bp)) //다음 가용리스트의 bp //predecessor 
-#define SUCC_P(bp) (*(void**)(bp+WSIZE)) //다음 가용리스트의 bp //suceessor 
-
-static char* heap_listp;
-static char* free_listp;
-void remove_block(void* bp);
-void put_free_block(void* bp);
-static void* extend_heap(size_t words);
-static void* coalesce(void *bp);
-static void * find_fit(size_t asize);
-static void place(void* bp, size_t asize);
+#define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(((char *)(bp)-WSIZE)))
+#define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE(((char *)(bp)-DSIZE)))
 
 
+static void* heap_listp;
+static void* last_listp; //next-fit의 검색 종료지점을 찾기위해 전역변수 선언
 
-void put_free_block(void* bp)
-{
-    SUCC_P(bp) = free_listp;
-    PRED_P(bp) = NULL;
-    PRED_P(free_listp) = bp;
-    free_listp = bp;
-}
-
-void remove_block(void *bp)
-{
-    // 첫번째 블럭을 없앨 때
-    if (bp == free_listp)
-    {
-        PRED_P(SUCC_P(bp)) = NULL;
-        free_listp = SUCC_P(bp);
-    }
-    // 앞 뒤 모두 있을 때
-    else
-    {
-        SUCC_P(PRED_P(bp)) = SUCC_P(bp);
-        PRED_P(SUCC_P(bp)) = PRED_P(bp);
-    }
-
-}
-
+/* 
+ * mm_init - initialize the malloc package.
+ */
 static void* coalesce(void *bp)
 {
     size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));
     size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
     size_t size = GET_SIZE(HDRP(bp));
 
-    //이미 가용리스트에 존재하던 블록은 연결하기 이전에 가용리스트에서 제거해준다.
+    //case1 위아래 alloc
+    if(prev_alloc && next_alloc)
+    {
+        return bp;
+    }
 
     //case2 prev는 alloc 이고 next는 free일때
-    if(prev_alloc && !next_alloc)
+    else if(prev_alloc && !next_alloc)
     {
-        remove_block(NEXT_BLKP(bp));
         size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
         PUT(HDRP(bp), PACK(size,0));
         PUT(FTRP(bp), PACK(size,0));
@@ -124,26 +94,22 @@ static void* coalesce(void *bp)
     //case3 prev는 free이고 next는 alloc일때
     else if(!prev_alloc && next_alloc)
     {
-        remove_block(PREV_BLKP(bp));
         size += GET_SIZE(HDRP(PREV_BLKP(bp)));
-        bp = PREV_BLKP(bp);
-        PUT(HDRP(bp), PACK(size, 0));
         PUT(FTRP(bp), PACK(size, 0));
+        PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
+        bp = PREV_BLKP(bp);
     }
     
     //case4 위아래 free
-    else if (!prev_alloc && !next_alloc)
+    else
     {
-        remove_block(PREV_BLKP(bp));
-        remove_block(NEXT_BLKP(bp));
         size += GET_SIZE(HDRP(PREV_BLKP(bp))) + GET_SIZE(FTRP(NEXT_BLKP(bp)));
         PUT(HDRP(PREV_BLKP(bp)), PACK(size,0));
         PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
         bp = PREV_BLKP(bp);
     }
+    last_listp = bp;
 
-    //연결된 블록을 가용리스트에 추가
-    put_free_block(bp); 
     return bp;
 
 }
@@ -173,28 +139,24 @@ int mm_init(void)
     // prolog block >> header , footer 로만 구성 각 1word 씩 2word
     // eplilog block >> header로만 구성 1word
     //heap_listp를 4워드 만큼 늘릴거야 이걸 실패하면 -1이겠지 그렇다면 리턴-1
-    if((heap_listp = mem_sbrk(6*WSIZE)) == (void*)-1)
+    if((heap_listp = mem_sbrk(4*WSIZE)) == (void*)-1)
     {
         return -1;
     }
     //성공했어! unused
     PUT(heap_listp,0);
     //Prologue header
-    PUT(heap_listp + (1*WSIZE), PACK((2*DSIZE), 1));
-    //프롤로그 PRED포인터 NULL로 초기화
-    PUT(heap_listp + (2*WSIZE), NULL);
-    //프롤로그 SUCC포인터 NULL로 초기화
-    PUT(heap_listp + (3*WSIZE), NULL); 
+    PUT(heap_listp + (1*WSIZE), PACK(DSIZE, 1));
     //Prologue footer
-    PUT(heap_listp + (4*WSIZE), PACK((2*DSIZE), 1));
+    PUT(heap_listp + (2*WSIZE), PACK(DSIZE, 1));
     //Epilogue header
-    PUT(heap_listp + (5*WSIZE), PACK(0,1));
+    PUT(heap_listp + (3*WSIZE), PACK(0,1));
     //늘 prologue header 가리키겟지!
-    
-    free_listp = heap_listp + DSIZE;
-    
+    heap_listp += (2*WSIZE);
+    last_listp = heap_listp;
+
     //이제 늘려야겠지
-    if (extend_heap(CHUNKSIZE/WSIZE) == NULL) //DSIZE로 나눠도 됨
+    if (extend_heap(CHUNKSIZE/WSIZE) == NULL)
         return -1;
     return 0;
 }
@@ -204,24 +166,48 @@ int mm_init(void)
  *     Always allocate a block whose size is a multiple of the alignment.
  */
 
+// static void * find_fit(size_t asize) 
+// {
+//     //first-fit search
+//     void *bp;
+
+//     //epilogue header만나면 사이즈 0이니까 끝나겠지
+//     for(bp = heap_listp; GET_SIZE(HDRP(bp))>0; bp = NEXT_BLKP(bp))
+//     { //프리한상태이고 asize가 들어갈수있을때
+//         if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp))))
+//         {
+//             return bp;
+//         }
+//     }
+//     return NULL; //No fit
+// }
+
+
 static void * find_fit(size_t asize) 
 {
-    //first-fit search
+    //next-fit search
     void *bp;
-
-    //epilogue header만나면 사이즈 0이니까 끝나겠지
-    for(bp = free_listp; GET_SIZE(HDRP(bp)) != 1; bp = SUCC_P(bp))
+    //epilogue header를 만나기 전까지 돌아간다.
+    for(bp = last_listp; GET_SIZE(HDRP(bp))>0; bp = NEXT_BLKP(bp))
     { //프리한상태이고 asize가 들어갈수있을때
-        if (asize <= GET_SIZE(HDRP(bp)))
+        if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp))))
         {
+            last_listp = bp;
+            return bp;
+        }
+
+    }
+    //처음부터 보기
+    for(bp = heap_listp; GET_SIZE(HDRP(bp))>0; bp = NEXT_BLKP(bp))
+    {
+        if(!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp))))
+        {
+            last_listp = bp;
             return bp;
         }
     }
     return NULL; //No fit
 }
-
-
-
 
 
 static void place(void* bp, size_t asize)
@@ -235,7 +221,6 @@ static void place(void* bp, size_t asize)
         bp = NEXT_BLKP(bp);
         PUT(HDRP(bp), PACK(csize-asize, 0));
         PUT(FTRP(bp), PACK(csize-asize, 0));
-        put_free_block(bp);
     }
     else 
     {
