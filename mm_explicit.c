@@ -65,16 +65,16 @@ team_t team = {
 #define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(HDRP(bp)))
 #define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE((HDRP(bp)-WSIZE)))
 
-#define PRED_P(bp) (*(void**)(bp)) //다음 가용리스트의 bp //predecessor 
-#define SUCC_P(bp) (*(void**)(bp+WSIZE)) //다음 가용리스트의 bp //suceessor 
+#define PRED_P(bp) (*(char**)(bp)) //다음 가용리스트의 bp //predecessor 
+#define SUCC_P(bp) (*(char**)(bp+WSIZE)) //다음 가용리스트의 bp //suceessor 
 
 static char* heap_listp;
 static char* free_listp;
-void remove_block(void* bp);
-void put_free_block(void* bp);
+static void remove_block(void* bp);
+static void put_free_block(void* bp);
 static void* extend_heap(size_t words);
 static void* coalesce(void *bp);
-static void * find_fit(size_t asize);
+static void* find_fit(size_t asize);
 static void place(void* bp, size_t asize);
 
 
@@ -210,7 +210,7 @@ static void * find_fit(size_t asize)
     void *bp;
 
     //epilogue header만나면 사이즈 0이니까 끝나겠지
-    for(bp = free_listp; GET_SIZE(HDRP(bp)) != 1; bp = SUCC_P(bp))
+    for(bp = free_listp; GET_ALLOC(HDRP(bp)) != 1; bp = SUCC_P(bp))
     { //프리한상태이고 asize가 들어갈수있을때
         if (asize <= GET_SIZE(HDRP(bp)))
         {
@@ -227,6 +227,7 @@ static void * find_fit(size_t asize)
 static void place(void* bp, size_t asize)
 {
     size_t csize = GET_SIZE(HDRP(bp));
+    remove_block(bp);
     //최소 16이니까 16보다 크냐!
     if ((csize - asize) >= (2*DSIZE)) //분할을 할 수있는 조건이 되면
     {
@@ -317,38 +318,52 @@ void mm_free(void *bp)
 //2. 위치가 없다면 malloc 을 통해 새롭게 사이즈만큼 생성한다. (예외처리의 일종)
 //3. 요청 사이즈가 기존 사이즈보다 작으면 요청 사이즈만큼의 데이터만 잘라서 옮긴다.
 
+// void *mm_realloc(void *bp, size_t size)
+// {   
+//     if(size <=0)
+//     {   
+//         mm_free(bp);
+//         return 0;
+//     }
+
+//     if(bp == NULL)
+//     {
+//         return mm_malloc(size);
+//     }
+
+//     void * newp = mm_malloc(size);
+//     if(newp == NULL)
+//     {
+//         return 0;
+//     }
+
+//     size_t copySize = GET_SIZE(HDRP(bp));
+//     if (size < copySize)
+//     {
+//         copySize = size;
+//     }
+//     memcpy(newp, bp, copySize); 
+//     mm_free(bp);
+//     return newp;
+// }
+
+
 void *mm_realloc(void *bp, size_t size)
-{   
-    if(size <=0)
-    {   
-        mm_free(bp);
-        return 0;
-    }
+{
+    void *oldptr = bp;
+    void *newptr;
+    size_t copySize;
 
-    if(bp == NULL)
-    {
-        return mm_malloc(size);
-    }
-
-    void * newp = mm_malloc(size);
-    if(newp == NULL)
-    {
-        return 0;
-    }
-
-    size_t copySize = GET_SIZE(HDRP(bp));
+    newptr = mm_malloc(size);
+    if (newptr == NULL)
+        return NULL;
+    copySize = GET_SIZE(HDRP(oldptr));
     if (size < copySize)
-    {
         copySize = size;
-    }
-    memcpy(newp, bp, copySize); 
-    mm_free(bp);
-    return newp;
+    memcpy(newptr, oldptr, copySize);
+    mm_free(oldptr);
+    return newptr;
 }
-
-
-
-
 
 
 
